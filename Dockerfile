@@ -1,4 +1,4 @@
-FROM debian:8
-EXPOSE 8080
-CMD ["/log-bouncer"]
-COPY target/release/ /
+FROM scratch
+ARG APP=log-bouncer
+ENV APP=${APP}
+COPY ${APP} .

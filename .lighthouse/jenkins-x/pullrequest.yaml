@@ -24,12 +24,29 @@ spec:
           resources: {}
         - name: jx-variables
           resources: {}
-        - name: build-cargo-install
+        - name: build-rust-binaries
+          image: rust:1.54.0
           resources: {}
+          script: |
+            #!/bin/bash
+            source .jx/variables.sh
+            apt-get update && \
+            apt-get install -y ca-certificates musl-tools && \
+            rm -rf /var/lib/apt/lists/* && \
+            update-ca-certificates --fresh && \
+            rustup target add x86_64-unknown-linux-musl && \
+            cargo build --release --target x86_64-unknown-linux-musl --bin log-bouncer
+            cp /etc/ssl/certs/ca-certificates.crt /workspace/source/target/x86_64-unknown-linux-musl/release/ca-certificates.crt
         - name: check-registry
           resources: {}
-        - name: build-container-build
+        - image: gcr.io/kaniko-project/executor:debug-v1.3.0
+          name: build-container-apps
           resources: {}
+          script: |
+            #!/busybox/sh
+            source .jx/variables.sh
+            cp /tekton/creds-secrets/tekton-container-registry-auth/.dockerconfigjson /kaniko/.docker/config.json
+            /kaniko/executor $KANIKO_FLAGS --context=/workspace/source/target/x86_64-unknown-linux-musl/release --build-arg APP="$APP_NAME" --build-arg VERSION="$VERSION" --destination="$PUSH_CONTAINER_REGISTRY/$DOCKER_REGISTRY_ORG/$APP_NAME:$VERSION"
         - name: promote-jx-preview
           resources: {}
   podTemplate: {}
