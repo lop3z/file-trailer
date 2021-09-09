@@ -51,10 +51,10 @@ spec:
             /kaniko/executor $KANIKO_FLAGS --context=/workspace/source/target/x86_64-unknown-linux-musl/release --build-arg APP="$APP_NAME" --build-arg VERSION="$VERSION" --destination="$PUSH_CONTAINER_REGISTRY/$DOCKER_REGISTRY_ORG/$APP_NAME:$VERSION"
         - name: promote-changelog
           resources: {}
-        - name: promote-helm-release
-          resources: {}
-        - name: promote-jx-promote
-          resources: {}
+        # - name: promote-helm-release
+        #   resources: {}
+        # - name: promote-jx-promote
+        #   resources: {}
   podTemplate: {}
   serviceAccountName: tekton-bot
   timeout: 12h0m0s
