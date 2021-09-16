@@ -1,5 +1,5 @@
 use chrono::Utc;
-use std::fs::{File};
+use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -29,7 +29,7 @@ type Result<T> = std::result::Result<T, Error>;
 /// eg. `systemd.log.2021-09-07-03-37-53`
 pub struct Rotator {
     /// Log file that needs to be watched & rotated
-    filename: PathBuf,
+    filepath: PathBuf,
     /// Rotation checks interval
     rotation_interval: Duration,
     /// Save state interval
@@ -48,22 +48,24 @@ pub struct Rotator {
 
 impl Rotator {
     pub fn new(
-        filename: PathBuf,
+        filepath: PathBuf,
         rotation_interval: Duration,
         save_state_interval: Duration,
         state_rx: watch::Receiver<u64>,
         max_size: u64,
         date_format: String,
     ) -> Result<Self> {
-        // create if the file hasn't been created
-        let _file = Rotator::touch_file(&filename)?;
+        info!("Watching the logfile `{}`...", filepath.to_string_lossy());
 
-        let mut saved_state = SavedState::new(&filename)?;
+        // create if the file hasn't been created
+        let _file = Rotator::touch_file(&filepath)?;
+
+        let mut saved_state = SavedState::new(&filepath)?;
 
         let pos = Self::recover_position(&mut saved_state)?;
 
         Ok(Self {
-            filename: filename.to_owned(),
+            filepath: filepath.to_owned(),
             date_format,
             state_rx,
             state: saved_state,
@@ -111,7 +113,7 @@ impl Rotator {
     }
 
     async fn check_file_exists(&self) -> Result<bool> {
-        let metadata = fs::metadata(&self.filename).await?;
+        let metadata = fs::metadata(&self.filepath).await?;
 
         Ok(metadata.is_file())
     }
@@ -121,7 +123,7 @@ impl Rotator {
             return Ok(false);
         }
 
-        let metadata = fs::metadata(&self.filename).await?;
+        let metadata = fs::metadata(&self.filepath).await?;
 
         if metadata.len() > self.max_size {
             Ok(true)
@@ -134,12 +136,12 @@ impl Rotator {
     async fn rotate(&self) -> Result<()> {
         let now = Utc::now();
         let timestamp = now.format(&self.date_format).to_string();
-        let new_filename = format!("{}.{}", self.filename.to_str().unwrap(), timestamp);
-        debug!("Renaming {:?} to `{}`...", &self.filename, new_filename);
+        let new_filename = format!("{}.{}", self.filepath.to_str().unwrap(), timestamp);
+        debug!("Renaming {:?} to `{}`...", &self.filepath, new_filename);
 
-        fs::rename(&self.filename, &new_filename).await?;
+        fs::rename(&self.filepath, &new_filename).await?;
         // then create a new file
-        File::create(&self.filename)?;
+        File::create(&self.filepath)?;
 
         info!("File rotated to `{}`", new_filename);
 
@@ -213,24 +215,41 @@ impl Rotator {
     }
 }
 
+use crc::{Algorithm, Crc, CRC_32_ISCSI};
+pub const HASHER: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
+
 /// The SavedState will be saved in a file.
 pub struct SavedState {
-    /// Filename of the log file in order to get the metadata
-    filename: PathBuf,
+    /// Filename of the log file in order to get the first line
+    filepath: PathBuf,
     /// State file
     state_file: File,
-    // /// File's `created_at()` timestamp
-    // timestamp: u64,
     /// Last position saved
     /// To make sure to not trigger writes every time for nothing
     position: u64,
 }
 
 impl SavedState {
-    pub fn new(filename: &PathBuf) -> Result<Self> {
-        let state_filename = format!(
-            ".{}.file-trailer-saved-state",
-            (*filename).to_str().unwrap()
+    pub fn new(filepath: &PathBuf) -> Result<Self> {
+        // get the filename of the logfile
+        let file_name = (*filepath)
+            .file_name()
+            .expect("Can't get the filename of the logfile")
+            .to_str()
+            .unwrap();
+        // using the same directory for our saved state
+        let mut state_filepath = filepath
+            .parent()
+            .expect("Can not get parent directory")
+            .to_path_buf();
+        let state_filename = format!(".{}.log-bouncer", file_name);
+
+        // using the same directory but a different filename (prefixed with ".")
+        state_filepath.push(state_filename);
+
+        debug!(
+            "Store the state in the file `{}`",
+            state_filepath.to_string_lossy()
         );
 
         let state_file = std::fs::OpenOptions::new()
@@ -238,10 +257,10 @@ impl SavedState {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&state_filename)?;
+            .open(&state_filepath)?;
 
         Ok(Self {
-            filename: filename.to_owned(),
+            filepath: filepath.to_owned(),
             state_file,
             position: 0,
         })
@@ -249,43 +268,53 @@ impl SavedState {
 
     /// Recover the saved state if exists
     pub fn read_file(&mut self) -> Result<u64> {
-        let metadata = self.state_file.metadata().unwrap();
+        let mut string = String::new();
+        self.state_file.read_to_string(&mut string)?;
 
-        if metadata.len() > 0 {
-            let mut string = String::new();
-            self.state_file.read_to_string(&mut string)?;
+        let state = string
+            .split(";")
+            .map(|e| e.parse::<u64>())
+            .filter_map(std::result::Result::ok)
+            .collect::<Vec<u64>>();
 
-            let state = string
-                .split(";")
-                .map(|e| e.parse::<u64>())
-                .filter_map(std::result::Result::ok)
-                .collect::<Vec<u64>>();
+        if state.len() != 2 {
+            Err(Error::CorruptedSavedState(
+                "State should contains 2 entries".into(),
+            ))?;
+        }
 
-            if state.len() != 2 {
-                Err(Error::CorruptedSavedState("Invalid size".into()))?;
-            }
+        // we recover file's uniq id, which is a u32
+        let uniq_id = *state.get(0).unwrap() as u32; // unwrap() is safe here
+        debug!("Recovered uniq_id of the file `{}`", uniq_id);
 
-            let file_created_at = state.get(0).unwrap(); // unwrap() is safe here
-
-            if *file_created_at == self.get_date_created()? {
-                // same file, we recover the saved position
-                Ok(state.get(1).unwrap().clone()) // unwrap() is safe here too
-            } else {
-                // this is a new file, we start from 0
-                Ok(0)
-            }
+        if uniq_id == self.get_uniq_id()? {
+            // same file, we recover the saved position
+            Ok(state.get(1).unwrap().clone()) // unwrap() is safe here too
         } else {
-            // The state hasn't existed yet, we start from position 0
+            // this is a new file, we start from 0
             Ok(0)
         }
     }
 
     /// Get the `created_at` from the file, converted to a timestamp
-    pub fn get_date_created(&self) -> Result<u64> {
-        let metadata = std::fs::metadata(&self.filename)?;
-        let date_created = metadata.created()?.duration_since(SystemTime::UNIX_EPOCH)?;
+    ///
+    /// Seems to not work on a docker image... because of being built in static?
+    pub fn get_uniq_id(&self) -> Result<u32> {
+        use std::io::{BufRead, BufReader, Cursor};
 
-        Ok(date_created.as_secs())
+        let file = File::open(&self.filepath)?;
+        let mut reader = BufReader::new(file);
+
+        let mut first_line = String::new();
+        reader.read_line(&mut first_line)?;
+
+        let first_line = first_line.trim();
+        debug!("File's first line content is `{}`", &first_line);
+
+        let hashed = HASHER.checksum(first_line.as_bytes());
+        debug!("File's first line hash is `{}`", hashed);
+
+        Ok(hashed)
     }
 
     /// Reset the position to the beginning of the file
@@ -297,7 +326,7 @@ impl SavedState {
     pub fn save(&mut self, pos: u64) -> Result<()> {
         debug!("Saving a state at position <{}>", pos);
 
-        let data = format!("{};{}", self.get_date_created()?, pos);
+        let data = format!("{};{}", self.get_uniq_id()?, pos);
         self.state_file.set_len(0)?; // truncate the file before writing it
         self.state_file.seek(SeekFrom::Start(0))?; // reset the cursor position to the beginning
         self.state_file.write_all(data.as_bytes())?;
