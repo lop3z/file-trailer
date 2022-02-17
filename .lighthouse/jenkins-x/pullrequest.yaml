@@ -25,7 +25,7 @@ spec:
         - name: jx-variables
           resources: {}
         - name: build-rust-binaries
-          image: rust:1.54.0
+          image: rust:1.58.1
           resources: {}
           script: |
             #!/bin/bash
