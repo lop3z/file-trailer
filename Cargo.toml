@@ -4,7 +4,7 @@ description = "tail log and push new lines on amqp (a la logstash)"
 authors = ["Jonathan Dizdarevic <dizda@dizda.fr>"]
 license = "MIT"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 repository = "https://github.com/dizda/log-bouncer"
 homepage = "https://github.com/dizda/log-bouncer"
 categories = ["asynchronous", "network-programming", "command-line-utilities", "filesystem", "parsing", "text-processing"]
@@ -23,7 +23,7 @@ env_logger = "0.9.0"
 async-trait = "0.1.52"
 chrono = "0.4.19"
 thiserror = "1.0.30"
-amqp-lapin-helper = "0.2.1"
+amqp-lapin-helper = "0.2.2"
 clap = "3.0.0-beta.4"
 crc = "2.1.0"
 
