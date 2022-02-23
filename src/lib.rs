@@ -1,25 +1,39 @@
+#[forbid(unsafe_code)]
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 pub mod opt;
 pub mod output;
 mod publisher;
+mod reader;
 mod rotator;
-// mod tail;
-mod watcher;
+mod tail;
 
 pub use opt::{parse, Opt};
 
 use crate::output::amqp::AmqpOutput;
 use crate::publisher::Publisher;
+use crate::reader::{LineInfo, Reader};
 use crate::rotator::Rotator;
-use crate::watcher::{LineInfo, TailReader};
 use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 pub async fn run(opts: Opt) -> Result<(), Box<dyn Error>> {
-    env_logger::init();
+    // Build a logger subscriber
+    let log = tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env());
+
+    if opts.json {
+        // activates json logging output
+        log.json().finish().init();
+    } else {
+        // or simply plain text
+        log.finish().init();
+    }
+
     info!("Started!");
 
     // Bounded 1 channel to make sure the watcher won't make any more progress in case rabbitmq
@@ -43,13 +57,14 @@ pub async fn run(opts: Opt) -> Result<(), Box<dyn Error>> {
     state_tx.send(rotator.get_position())?; // we store the last position
 
     // Tail the file and send new entries
-    let watcher = TailReader::new(absolute_path, rotator.get_position(), publish_tx)?.work();
+    let tail = Reader::new(absolute_path, rotator.get_position(), publish_tx)?;
+    let watcher = tail.work();
 
     let rotator_handle = rotator.watch();
 
-    let output = output::stdout::StdOut {};
-    // let output =
-    //     AmqpOutput::new(&opts.amqp_uri, &opts.amqp_exchange, &opts.amqp_routing_key).await?;
+    // let output = output::stdout::StdOut {};
+    let output =
+        AmqpOutput::new(&opts.amqp_uri, &opts.amqp_exchange, &opts.amqp_routing_key).await?;
 
     // Send the new entries to the publisher, eg. amqp
     let mut publisher = Publisher::new(output, publish_rx, state_tx);
