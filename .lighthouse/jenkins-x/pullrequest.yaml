@@ -35,7 +35,7 @@ spec:
             rm -rf /var/lib/apt/lists/* && \
             update-ca-certificates --fresh && \
             rustup target add x86_64-unknown-linux-musl && \
-            cargo build --release --target x86_64-unknown-linux-musl --bin log-bouncer
+            cargo test --release --target x86_64-unknown-linux-musl
         #     cp /etc/ssl/certs/ca-certificates.crt /workspace/source/target/x86_64-unknown-linux-musl/release/ca-certificates.crt
         # - name: check-registry
         #   resources: {}
